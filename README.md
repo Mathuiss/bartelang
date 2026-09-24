@@ -22,7 +22,15 @@ Let bold = http.ResponseText | `tr '[a-z]' '[A-Z]'`
 Debug.Print "[$sysName] $bold"
 ```
 
-## Build and run
+## Install and run
+
+Install the released binary from crates.io:
+
+```sh
+cargo install bartelang
+```
+
+Or build from a source checkout:
 
 ```sh
 cargo build --release
