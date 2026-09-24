@@ -1,0 +1,109 @@
+' tour.btm - a walk through what Bartelang can do
+' Run with: bartelang run examples/tour.btm
+
+' ---- 1. Variables, Dim/Let, and the + versus & split -------------------
+Dim host
+Let host = `uname -n`
+
+Dim count
+Let count = 2 + 3 * 4          ' no semicolons, no line noise
+Debug.Print "host is $host and count is $count"
+
+Dim label
+Let label = "count=" & count & " items"    ' & is the string joiner
+Debug.Print label
+
+' ---- 2. Control flow: If/ElseIf/Else and the vintage loops ------------
+Dim i
+For i = 1 To 5 Step 2
+    Debug.Print "for step: $i"
+Next i
+
+Let i = 0
+While i < 3
+    Let i = i + 1
+Wend
+Debug.Print "while ended at $i"
+
+If count > 20 Then
+    Debug.Print "big"
+ElseIf count > 10 Then
+    Debug.Print "medium"
+Else
+    Debug.Print "small"
+End If
+
+' ---- 3. Procedures: Sub acts, Function returns via its own name -------
+Sub Banner(text)
+    Debug.Print "== $text =="
+End Sub
+
+Function Triple(n)
+    Triple = n * 3
+End Function
+
+Banner "procedures"
+Debug.Print "triple(7) = " & Triple(7)
+
+' ---- 4. Arrays are 1-based, like it is 1998 --------------------------
+Dim slots(3)
+Let slots(1) = "alpha"
+Let slots(2) = "beta"
+Let slots(3) = "gamma"
+For i = 1 To 3
+    Debug.Print "slot $i: " & slots(i)
+Next i
+
+' ---- 5. The Linux half: shell, pipes and exit codes ------------------
+Dim kernel
+Let kernel = `uname -sr`
+Debug.Print "kernel: $kernel"
+
+Dim shout
+Let shout = "bartelang speaks unix" | `tr '[a-z]' '[A-Z]'`
+Debug.Print shout
+
+Dim code
+Let code = `exit 3`
+Debug.Print "shell exit code seen by ENV: " & ENV("?")
+
+' A multi-line statement, held together by the line-continuation rule.
+Dim summary
+Let summary = "one" _
+    & " two" _
+    & " three"
+Debug.Print summary
+
+' ---- 6. Vintage file channels ----------------------------------------
+Open "tour_output.txt" For Output As #1
+Print #1, "written from bartelang on $host"
+Close #1
+
+Open "tour_output.txt" For Input As #2
+Dim text_line
+While Not EOF(#2)
+    Line Input #2, text_line
+    Debug.Print "read back: $text_line"
+Wend
+Close #2
+
+' ---- 7. Try/Catch, as a replacement for On Error Resume Next ---------
+Try
+    Dim boom
+    Let boom = 10 / 0
+    Debug.Print "this line is unreachable"
+Catch Err
+    Debug.Print "caught error " & Err.Number & ": " & Err.Message
+End Try
+
+Try
+    Dim http
+    Set http = CreateObject("HTTP")
+    http.Open "GET", "https://wttr.in/Delft?format=3", False
+    http.Send
+    Debug.Print "weather says: " & http.ResponseText
+Catch Err
+    Debug.Print "network unavailable (" & Err.Number & "), which is fine for a tour"
+End Try
+
+Debug.Print "done"

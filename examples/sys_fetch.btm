@@ -1,0 +1,46 @@
+' sys_fetch.btm - System and Weather fetching script
+' Run with: bartelang run sys_fetch.btm "Delft"
+'
+' Note: the design document uses MsgBox for the output below.  Bartelang has no
+' dialog box (and no MsgBox statement), so Debug.Print is used instead.
+
+Dim sysName
+Let sysName = `uname -n`
+
+Debug.Print "Initializing Bartelang environment on $sysName..."
+
+' 1. Check CLI arguments (1-based index)
+Dim targetCity
+If ARGS(1) = "" Then
+    Let targetCity = InputBox("Enter city for weather report:")
+Else
+    Let targetCity = ARGS(1)
+End If
+
+Try
+    ' 2. The HTTP object: a native request, no Windows registry involved
+    Dim http
+    Set http = CreateObject("HTTP")
+    http.Open "GET", "https://wttr.in/" & targetCity & "?format=3", False
+    http.Send
+
+    ' 3. Cross-Boundary Piping!
+    ' Pipe the VBS string into a bash process to convert to uppercase
+    Dim formattedWeather
+    Let formattedWeather = http.ResponseText | `tr '[a-z]' '[A-Z]'`
+
+    ' Check the built-in exit code tracker
+    If ENV("?") = 0 Then
+        ' 4. Vintage File I/O Channel
+        Open "weather_log.txt" For Append As #1
+        Print #1, "[$sysName] " & formattedWeather
+        Close #1
+
+        Debug.Print "Successfully logged: " & formattedWeather
+    Else
+        Debug.Print "Bash pipeline failed."
+    End If
+
+Catch Err
+    Debug.Print "A fatal error occurred: " & Err.Message
+End Try

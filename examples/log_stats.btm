@@ -1,0 +1,91 @@
+' log_stats.btm - tally a web log by status code and resource.
+' Run with: bartelang run examples/log_stats.btm [path]
+
+' If the file is not there, write a small sample so the example always does
+' something.  Native filesystem calls, so no shell quoting to get wrong.
+Dim path
+If ARGS(1) = "" Then
+    Let path = "access.log"
+Else
+    Let path = ARGS(1)
+End If
+
+Dim fso
+Set fso = CreateObject("Scripting.FileSystemObject")
+
+If Not fso.FileExists(path) Then
+    Dim seed
+    Set seed = fso.CreateTextFile(path, True)
+    seed.WriteLine "10.0.0.1 - - GET /index 200"
+    seed.WriteLine "10.0.0.2 - - POST /login 500"
+    seed.WriteLine "10.0.0.1 - - GET /style.css 200"
+    seed.WriteLine "10.0.0.3 - - GET /missing 404"
+    seed.WriteLine "10.0.0.2 - - GET /index 200"
+    seed.WriteLine "this line is malformed"
+    seed.Close
+    Debug.Print "wrote a sample log to $path"
+End If
+
+Dim input
+Set input = fso.OpenTextFile(path, 1)
+Dim lines
+Let lines = Split(input.ReadAll(), vbLf)
+input.Close
+
+' A well-formed line is anything ending in a three-digit status.
+Dim wellFormed
+Set wellFormed = CreateObject("VBScript.RegExp")
+wellFormed.Pattern = "^\S+ .+ \d{3}$"
+
+Dim statuses
+Set statuses = CreateObject("Scripting.Dictionary")
+Dim resources
+Set resources = CreateObject("Scripting.Dictionary")
+
+Dim records
+Let records = 0
+Dim skipped
+Let skipped = 0
+
+Dim line
+For Each line In lines
+    Dim text
+    Let text = Trim(line)
+    If text <> "" Then
+        If wellFormed.Test(text) Then
+            Let records = records + 1
+            Dim fields
+            Let fields = Split(text, " ")
+            Dim status
+            Let status = fields(UBound(fields))
+            If statuses.Exists(status) Then
+                statuses(status) = statuses(status) + 1
+            Else
+                statuses.Add status, 1
+            End If
+            ' 1-based: host, -, -, verb, resource, status
+            Dim resource
+            Let resource = fields(5)
+            If resources.Exists(resource) Then
+                resources(resource) = resources(resource) + 1
+            Else
+                resources.Add resource, 1
+            End If
+        Else
+            Let skipped = skipped + 1
+        End If
+    End If
+Next
+
+Debug.Print "--- status codes ---"
+Dim key
+For Each key In statuses.Keys
+    Debug.Print "  " & key & " x" & statuses(key)
+Next
+
+Debug.Print "--- resources ---"
+For Each key In resources.Keys
+    Debug.Print "  " & key & " x" & resources(key)
+Next
+
+Debug.Print "records: $records, skipped: $skipped"

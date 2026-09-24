@@ -1,0 +1,24 @@
+[package]
+name = "bartelang"
+version = "0.1.0"
+edition = "2024"
+description = "Bartelang: a 1998 Visual Basic 6 dialect with a Unix stream-processing engine"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+# The HTTP object: the interpreter does the request natively, from safe Rust.
+reqwest = { version = "0.12", features = ["blocking"] }
+
+# `VBScript.RegExp`.
+regex = "1"
+
+# Used for the default SIGPIPE disposition (so `bartelang run x.btm | head`
+# exits quietly the way every other Unix tool does) and for local wall-clock
+# time, which std cannot do on its own.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "bartelang"
+path = "src/main.rs"
