@@ -45,6 +45,11 @@ Two rules for every step:
   `cargo install bartelang` and a pinned `Cargo.toml` both mean something
   predictable. The version is bumped in the same step as the change, not at
   release time.
+- **The CLI is `clap` and TLS is `rustls`.** clap (builder API, no proc macro)
+  owns argument parsing, `--help` and usage errors; `reqwest` 0.13 defaults to
+  rustls with the platform trust store, so builds stop needing OpenSSL while
+  HTTPS keeps using the system's certificates. Both landed in `1.1.0`, the first
+  functionality update.
 
 ### A note on object naming
 

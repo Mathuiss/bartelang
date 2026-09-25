@@ -467,9 +467,71 @@ fn version_and_usage_are_available() {
     let version = Command::new(binary()).arg("version").output().unwrap();
     assert!(String::from_utf8_lossy(&version.stdout).contains("bartelang"));
 
+    let flag = Command::new(binary()).arg("--version").output().unwrap();
+    assert_eq!(flag.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&flag.stdout).contains(env!("CARGO_PKG_VERSION")),
+        "stdout: {}",
+        String::from_utf8_lossy(&flag.stdout)
+    );
+
+    // `--help` is a success; a bare invocation is a usage problem (exit 2) that
+    // still shows what to type.
+    let help = Command::new(binary()).arg("--help").output().unwrap();
+    assert_eq!(help.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage:"));
+
     let usage = Command::new(binary()).output().unwrap();
     assert_eq!(usage.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&usage.stdout).contains("USAGE"));
+    assert!(
+        String::from_utf8_lossy(&usage.stdout).contains("Usage:"),
+        "stdout: {}",
+        String::from_utf8_lossy(&usage.stdout)
+    );
+}
+
+#[test]
+fn an_unknown_command_is_a_usage_error() {
+    let output = Command::new(binary()).arg("frobnicate").output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!output.stderr.is_empty() || !output.stdout.is_empty());
+}
+
+#[test]
+fn run_arguments_pass_through_hyphens_and_all() {
+    let dir = temp_dir("args-passthrough");
+    let outcome = run(
+        &dir,
+        "Debug.Print ARGS(1) & \"|\" & ARGS(2) & \"|\" & ARGS(3)\n",
+        &["--weird", "-x", "plain"],
+    );
+    assert_eq!(outcome.code, 0, "stderr: {}", outcome.stderr);
+    assert_eq!(outcome.stdout, "--weird|-x|plain\n");
+}
+
+#[test]
+fn a_bare_script_path_is_shorthand_for_run() {
+    let dir = temp_dir("shorthand");
+    let path = write_file(&dir, "script.btm", "Debug.Print \"shorthand\"\n");
+    let output = Command::new(binary())
+        .arg(&path)
+        .current_dir(&dir)
+        .output()
+        .expect("spawn bartelang");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "shorthand\n");
+}
+
+#[test]
+fn subcommand_help_documents_include_directories() {
+    let help = Command::new(binary())
+        .args(["run", "--help"])
+        .output()
+        .unwrap();
+    assert_eq!(help.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&help.stdout);
+    assert!(stdout.contains("--include-dir"), "stdout: {stdout}");
+    assert!(stdout.contains("ARGS"), "stdout: {stdout}");
 }
 
 #[test]

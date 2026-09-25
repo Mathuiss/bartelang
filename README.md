@@ -65,14 +65,15 @@ text so errors can name it.
 
 ## CLI
 
-- `bartelang run [-I <dir>]... <file.btm> [args...]` — parse and execute. `args` populate `ARGS`.
+- `bartelang run [-I <dir>]... <file.btm> [args...]` — parse and execute. `args`
+  populate `ARGS` and are handed over untouched, hyphens included.
 - `bartelang parse [-I <dir>]... <file.btm>` — dump the parsed AST with `{:#?}`.
-- `bartelang version`, `bartelang help`
+- `bartelang version` / `--version`, `bartelang help` / `--help`
 - `bartelang script.btm` — shorthand for `run` when the path exists or ends in `.btm`.
 
-`-I` adds a directory to the include search path (repeatable; `-I<dir>` works
-too), and `$BARTELANG_PATH` adds more, colon-separated. See
-[Modules and includes](#modules-and-includes).
+`-I <dir>` (also spelled `--include-dir <dir>`, repeatable, and `-I<dir>` works)
+adds a directory to the include search path, and `$BARTELANG_PATH` adds more,
+colon-separated. See [Modules and includes](#modules-and-includes).
 
 Exit status: `0` on success, `1` for a syntax, load or runtime error, `2` for a
 usage problem (including a script that cannot be read at all).
@@ -369,8 +370,8 @@ case-insensitively.
 
 **`HTTP`** — `Open method, url, async`, `SetRequestHeader name, value`,
 `SetTimeouts ms...`, `Send [body]`, `Abort`, and the properties `ResponseText`,
-`Status`, `StatusText`, `ReadyState`. Backed by safe `reqwest`; the default
-timeout is 30 seconds.
+`Status`, `StatusText`, `ReadyState`. Backed by safe `reqwest` with rustls for
+TLS — no system OpenSSL to install — and a 30 second default timeout.
 
 **`Scripting.FileSystemObject`** — `FileExists`, `FolderExists`, `CreateFolder`
 (`mkdir -p` semantics), `DeleteFile`, `DeleteFolder` (recursive only when you pass
@@ -576,6 +577,11 @@ examples/        sys_fetch.btm, tour.btm, log_stats.btm, count_words.btm + lib/t
 - **`Err.File` is a Bartelang addition.** VB6's `Err` had no file to name — one
   file per program — so `Err.Line` alone becomes ambiguous the moment a program
   has includes.
+- **TLS is rustls, not OpenSSL.** `reqwest` 0.13 defaults to rustls with
+  `aws-lc-rs`, verifying against the platform trust store, so HTTPS still honours
+  the system's certificates. Building needs a C toolchain and cmake (for
+  `aws-lc-rs`) but no OpenSSL headers — the trade that lets `cargo install
+  bartelang` work on a bare Linux box.
 - **Known gap.** Assigning *through* a non-variable member receiver
   (`points(1).X = 5`) is not supported: reading works, writing would need an
   lvalue path in the interpreter.

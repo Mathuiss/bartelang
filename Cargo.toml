@@ -1,6 +1,6 @@
 [package]
 name = "bartelang"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
 description = "Bartelang: a 1998 Visual Basic 6 dialect with a Unix stream-processing engine"
 license = "MIT"
@@ -15,8 +15,13 @@ categories = [
 ]
 
 [dependencies]
+# The CLI: argument parsing, --help and usage errors.
+clap = { version = "4.6.7", features = ["wrap_help"] }
+
 # The HTTP object: the interpreter does the request natively, from safe Rust.
-reqwest = { version = "0.12", features = ["blocking"] }
+# 0.13 defaults to rustls (with the platform trust store), so building no
+# longer needs OpenSSL on the system.
+reqwest = { version = "0.13.5", features = ["blocking"] }
 
 # `VBScript.RegExp`.
 regex = "1"
