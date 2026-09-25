@@ -1,6 +1,6 @@
 [package]
 name = "bartelang"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 description = "Bartelang: a 1998 Visual Basic 6 dialect with a Unix stream-processing engine"
 license = "MIT"

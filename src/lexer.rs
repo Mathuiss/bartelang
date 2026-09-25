@@ -9,6 +9,8 @@
 //!   * a space followed by `_` then a newline is line continuation, no token
 //!   * `'` starts a comment that runs to end of line
 //!   * a leading `#!` line is a shebang and is skipped
+//!   * `$` before a backtick marks an interpolated command; plain backticks are
+//!     captured verbatim
 //!   * `"..."` is a string; `""` inside a string is a literal quote
 //!   * `` `...` `` is a command substitution, captured verbatim
 //!   * `#1` is a vintage file channel handle
@@ -33,6 +35,9 @@ pub enum Token {
     Str(String),
     /// `` `...` `` command substitution, captured exactly as typed.
     Backtick(String),
+    /// `$` - before a backtick, marks the command as interpolated rather than
+    /// verbatim.  A `$` anywhere else is not part of the grammar.
+    Dollar,
 
     Plus,
     Minus,
@@ -72,6 +77,7 @@ impl Token {
             Token::Str(_) => "a string literal".to_string(),
             Token::Backtick(_) => "a command substitution".to_string(),
             Token::Hash => "'#'".to_string(),
+            Token::Dollar => "'$'".to_string(),
             Token::Plus => "'+'".to_string(),
             Token::Minus => "'-'".to_string(),
             Token::Star => "'*'".to_string(),
@@ -280,6 +286,14 @@ pub fn tokenize(src: &str) -> Result<Lexed, SyntaxError> {
                 // itself is parsed as an expression, which is what let period
                 // code write `As #FreeFile()`.
                 tokens.push(Token::Hash);
+                lines.push(line);
+                cols.push(col);
+                i += 1;
+            }
+            '$' => {
+                // Outside strings and backticks, `$` only ever introduces the
+                // interpolated form of a command.
+                tokens.push(Token::Dollar);
                 lines.push(line);
                 cols.push(col);
                 i += 1;

@@ -73,6 +73,34 @@ impl Interp {
                 }
                 Ok(Variant::String(std::env::var(&key).unwrap_or_default()))
             }
+            "setenv" => {
+                require(name, &args, 2, 2)?;
+                let key = first_is_not_object(name, &args[0])?;
+                if key.is_empty() {
+                    return Err(BrtError::invalid_call("SetEnv needs an environment variable name"));
+                }
+                if key == "?" {
+                    return Err(BrtError::invalid_call(
+                        "SetEnv cannot set '?': that name belongs to the last shell exit code",
+                    ));
+                }
+                let value = args[1].display_string();
+                // SAFETY: the interpreter owns the environment on its own
+                // thread - nothing else in the process reads or writes it while
+                // a script runs.  Children inherit what is set here, which is
+                // the point: a value set with SetEnv is visible to `ENV()` and
+                // to every command run afterwards.
+                unsafe { std::env::set_var(&key, &value) };
+                Ok(Variant::Empty)
+            }
+            "capture" => {
+                require(name, &args, 1, 1)?;
+                let command = first_is_not_object(name, &args[0])?;
+                // The same shell path as backticks: `sh -c`, stdout only, the
+                // exit code left in ENV("?").
+                let output = self.run_shell(&command, None)?;
+                Ok(Variant::String(output))
+            }
             "inputbox" => {
                 require(name, &args, 1, 1)?;
                 let prompt = first_is_not_object(name, &args[0])?;

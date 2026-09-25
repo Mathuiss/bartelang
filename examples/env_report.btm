@@ -1,0 +1,42 @@
+#!/usr/bin/env bartelang
+' env_report.btm - the three routes from a script value into a shell command.
+'
+' Run with: bartelang run examples/env_report.btm [name]
+'
+' Every route ends at `sh -c`; the difference is where the value is
+' substituted, and therefore who does the quoting.
+
+Dim who
+Let who = "unix"
+If ARGS(1) <> "" Then
+    Let who = ARGS(1)
+End If
+
+' 1. SetEnv writes the environment.  ENV() sees it, and so does every command
+'    run afterwards.  Nothing in the command text is interpolated: the shell
+'    expands "$BT_WHO" itself, so a value with spaces stays one argument.
+SetEnv "BT_WHO", who
+Dim plain
+Let plain = `printf 'plain: %s' "$BT_WHO"`
+Debug.Print plain
+
+' 2. A $ in front of the backtick interpolates like a string, and the text
+'    that comes out is what the shell runs.  Quote the interpolation yourself.
+Dim interpolated
+Let interpolated = $`printf 'interpolated: %s' "$who"`
+Debug.Print interpolated
+
+' 3. Capture() runs a command assembled from parts, for when the command is
+'    data rather than syntax.
+Dim captured
+Let captured = Capture("printf 'captured: %s' " & UCase(who))
+Debug.Print captured
+
+' Inside an interpolated command, \$ hands the dollar to the shell, so this
+' reads the environment variable rather than the script's.
+Dim escaped
+Let escaped = $`printf 'escaped: %s' \$BT_WHO`
+Debug.Print escaped
+
+' Every command leaves its exit code in ENV("?").
+Debug.Print "exit: " & ENV("?")

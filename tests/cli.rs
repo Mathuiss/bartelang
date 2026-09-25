@@ -1955,3 +1955,137 @@ fn the_shipped_include_example_runs() {
     assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
     assert!(stdout.contains("sentence words: 9"), "stdout: {stdout}");
 }
+
+// --------------------------------------------------------------- commands
+
+#[test]
+fn interpolated_commands_capture_and_plain_backticks_end_to_end() {
+    let dir = temp_dir("commands");
+    let outcome = run(
+        &dir,
+        r#"
+Dim btProbe
+Let btProbe = "unix"
+
+' Plain backticks are shell text: the shell expands its own (unset) variable.
+Dim literal
+Let literal = `printf '<%s>' $btProbe`
+Debug.Print "literal: " & literal
+
+' A $ before the backtick opts into interpolation.
+Dim expanded
+Let expanded = $`printf '<%s>' $btProbe`
+Debug.Print "expanded: " & expanded
+
+' Capture is the same substitution, built from a string.
+Dim captured
+Let captured = Capture("printf '%s' " & btProbe)
+Debug.Print "captured: " & captured
+"#,
+        &[],
+    );
+    assert_eq!(outcome.code, 0, "stderr: {}", outcome.stderr);
+    assert_eq!(
+        outcome.stdout,
+        "literal: <>\nexpanded: <unix>\ncaptured: unix\n"
+    );
+}
+
+#[test]
+fn set_env_reaches_env_and_child_commands_end_to_end() {
+    let dir = temp_dir("setenv");
+    let outcome = run(
+        &dir,
+        r#"
+SetEnv "BT_GREETING", "hello world"
+Debug.Print "env: " & ENV("BT_GREETING")
+
+' The child sees it too, and the shell does the quoting.
+Dim quoted
+Let quoted = `printf '<%s>' "$BT_GREETING"`
+Debug.Print "child: " & quoted
+"#,
+        &[],
+    );
+    assert_eq!(outcome.code, 0, "stderr: {}", outcome.stderr);
+    assert_eq!(outcome.stdout, "env: hello world\nchild: <hello world>\n");
+}
+
+#[test]
+fn set_env_refuses_the_reserved_slot_end_to_end() {
+    let dir = temp_dir("setenv-reserved");
+    let outcome = run(&dir, "SetEnv \"?\", \"3\"\n", &[]);
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("error 5"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn an_undefined_variable_in_an_interpolated_command_is_reported_end_to_end() {
+    let dir = temp_dir("interpolated-undefined");
+    let outcome = run(&dir, "Dim x\nLet x = $`echo $btMissingVariable`\n", &[]);
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome
+            .stderr
+            .contains("Variable not defined: btmissingvariable"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn a_dollar_must_introduce_a_command() {
+    let dir = temp_dir("dollar-alone");
+    let outcome = run(&dir, "Dim x\nLet x = $\n", &[]);
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("syntax error"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("expected a `command` after '$'"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn the_shipped_command_environment_example_runs() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let dir = temp_dir("env-report");
+
+    let output = Command::new(binary())
+        .arg("run")
+        .arg(examples.join("env_report.btm"))
+        .current_dir(&dir)
+        .output()
+        .expect("spawn bartelang");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(
+        stdout,
+        "plain: unix\ninterpolated: unix\ncaptured: UNIX\nescaped: unix\nexit: 0\n"
+    );
+
+    // The same script, with its value handed in from the command line.
+    let output = Command::new(binary())
+        .arg("run")
+        .arg(examples.join("env_report.btm"))
+        .arg("Delft")
+        .current_dir(&dir)
+        .output()
+        .expect("spawn bartelang");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert!(
+        stdout.contains("plain: Delft\ninterpolated: Delft\ncaptured: DELFT\n"),
+        "stdout: {stdout}"
+    );
+}

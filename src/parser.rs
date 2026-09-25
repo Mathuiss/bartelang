@@ -20,8 +20,8 @@
 use std::collections::HashSet;
 
 use crate::ast::{
-    CasePattern, Expr, FileMode, LoopCondition, PrintItem, ProcedureKind, Program, SelectArm,
-    Separator, Stmt, TypeField,
+    CasePattern, CommandText, Expr, FileMode, LoopCondition, PrintItem, ProcedureKind, Program,
+    SelectArm, Separator, Stmt, TypeField,
 };
 use crate::error::SyntaxError;
 use crate::lexer::{tokenize, Lexed, Token};
@@ -30,7 +30,7 @@ use crate::value::Variant;
 /// Function names that always win over a same-named array, so that
 /// `Dim args(3)` cannot shadow `ARGS`.
 const BUILTIN_NAMES: &[&str] = &[
-    "args", "env", "inputbox", "createobject", "len", "left", "right", "mid", "instr", "instrrev",
+    "args", "env", "setenv", "capture", "inputbox", "createobject", "len", "left", "right", "mid", "instr", "instrrev",
     "ucase", "lcase", "trim", "ltrim", "rtrim", "replace", "chr", "asc", "val", "str", "cstr",
     "cint", "clng", "cdbl", "csng", "cbool", "abs", "int", "fix", "sgn", "sqr", "now", "date",
     "time", "hex", "oct", "space", "string", "isnumeric", "isempty", "eof",
@@ -1157,22 +1157,46 @@ impl Parser {
         let mut left = self.parse_or()?;
         while self.check(&Token::Pipe) {
             self.advance();
-            let command = match self.advance() {
-                Token::Backtick(cmd) => cmd,
-                Token::Str(text) => text,
-                other => {
-                    return Err(self.error_here(format!(
-                        "expected a `command` after '|', found {}",
-                        other.describe()
-                    )))
-                }
-            };
+            let command = self.parse_pipeline_command()?;
             left = Expr::Pipeline {
                 input: Box::new(left),
                 command,
             };
         }
         Ok(left)
+    }
+
+    /// The right-hand side of `|`: a command.  Backticks are verbatim, a `$`
+    /// before the backtick opts into interpolation, and a double-quoted string
+    /// interpolates exactly as it does anywhere else.
+    fn parse_pipeline_command(&mut self) -> Result<CommandText, SyntaxError> {
+        if self.check(&Token::Dollar) {
+            self.advance();
+            return match self.peek().clone() {
+                Token::Backtick(cmd) => {
+                    self.advance();
+                    Ok(interpolated_command(&cmd))
+                }
+                other => Err(self.error_here(format!(
+                    "expected a `command` after '$', found {}",
+                    other.describe()
+                ))),
+            };
+        }
+        match self.peek().clone() {
+            Token::Backtick(cmd) => {
+                self.advance();
+                Ok(CommandText::Literal(cmd))
+            }
+            Token::Str(text) => {
+                self.advance();
+                Ok(interpolated_command(&text))
+            }
+            other => Err(self.error_here(format!(
+                "expected a `command` after '|', found {}",
+                other.describe()
+            ))),
+        }
     }
 
     fn parse_or(&mut self) -> Result<Expr, SyntaxError> {
@@ -1389,7 +1413,19 @@ impl Parser {
             }
             Token::Backtick(cmd) => {
                 self.advance();
-                Ok(Expr::ShellCommand(cmd))
+                Ok(Expr::ShellCommand(CommandText::Literal(cmd)))
+            }
+            Token::Dollar => {
+                self.advance();
+                if let Token::Backtick(cmd) = self.peek().clone() {
+                    self.advance();
+                    Ok(Expr::ShellCommand(interpolated_command(&cmd)))
+                } else {
+                    Err(self.error_here(format!(
+                        "expected a `command` after '$', found {}",
+                        self.peek().describe()
+                    )))
+                }
             }
             Token::Hash => {
                 // `#1` as a value, so that `EOF(#1)` works, and `#f` so that
@@ -1482,6 +1518,19 @@ fn binary(left: Expr, operator: Token, right: Expr) -> Expr {
 /// `Len(...)` reads as a call rather than an array subscript.
 pub fn is_builtin(name: &str) -> bool {
     BUILTIN_NAMES.contains(&name)
+}
+
+/// Turns the text of a command written with a `$` in front of the backtick
+/// into its interpolated form, reusing the string rules.
+fn interpolated_command(raw: &str) -> CommandText {
+    match split_interpolated(raw) {
+        // Nothing to expand: hand the text straight to the shell.
+        Expr::Literal(Variant::String(text)) => CommandText::Literal(text),
+        Expr::Variable(name) => CommandText::Interpolated(vec![Expr::Variable(name)]),
+        Expr::InterpolatedString(parts) => CommandText::Interpolated(parts),
+        // `split_interpolated` produces nothing else, but stay total.
+        other => CommandText::Interpolated(vec![other]),
+    }
 }
 
 /// Splits a string literal into literal and `$variable` parts.
@@ -1726,8 +1775,31 @@ mod tests {
         let Expr::Pipeline { input, command } = value else {
             panic!("expected a pipeline");
         };
-        assert_eq!(command, "tr a-z A-Z");
+        assert!(matches!(command, CommandText::Literal(text) if text == "tr a-z A-Z"));
         assert!(matches!(**input, Expr::MethodCall { .. }));
+    }
+
+    #[test]
+    fn a_dollar_before_a_backtick_marks_an_interpolated_command() {
+        let program = parse("Let s = $`echo $name`\n");
+        let Stmt::Let { value, .. } = at(&program, 0) else {
+            panic!("expected a Let");
+        };
+        let Expr::ShellCommand(CommandText::Interpolated(parts)) = value else {
+            panic!("expected an interpolated command, got {value:?}");
+        };
+        assert_eq!(parts.len(), 2);
+        assert!(matches!(&parts[0], Expr::Literal(Variant::String(s)) if s == "echo "));
+        assert!(matches!(&parts[1], Expr::Variable(n) if n == "name"));
+
+        // Without the marker the command is handed over verbatim.
+        let program = parse("Let s = `echo $name`\n");
+        let Stmt::Let { value, .. } = at(&program, 0) else {
+            panic!("expected a Let");
+        };
+        assert!(
+            matches!(value, Expr::ShellCommand(CommandText::Literal(text)) if text == "echo $name")
+        );
     }
 
     #[test]

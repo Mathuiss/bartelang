@@ -44,7 +44,8 @@ Two rules for every step:
   bumps the major, new functionality the middle number, and a fix the last, so
   `cargo install bartelang` and a pinned `Cargo.toml` both mean something
   predictable. The version is bumped in the same step as the change, not at
-  release time.
+  release time. `1.1.0` was the first functionality update; `1.2.0` is the
+  second (commands and the environment).
 - **The CLI is `clap` and TLS is `rustls`.** clap (builder API, no proc macro)
   owns argument parsing, `--help` and usage errors; `reqwest` 0.13 defaults to
   rustls with the platform trust store, so builds stop needing OpenSSL while
@@ -359,6 +360,50 @@ module's `Dim`s are private to it — it needs per-unit environments, and would
 arrive together with `Private Sub` and qualified calls), dynamic
 `ExecuteGlobal`-style loading, project manifests in the `.vbp` sense, and glob
 includes.
+
+---
+
+## Milestone 8 — Commands and the environment  ✅ done (1.2.0)
+
+Getting a script's values into a shell command used to mean one of two things:
+build the string and hand it to `WScript.Shell.Exec`, or write the values into
+the command text and hope. The first is verbose; the second is the `$` problem.
+
+- [x] **`Capture(command)`** — a command substitution written as a string, for
+      commands assembled from parts: `Capture("curl -s " & url)`. The same shell
+      path and semantics as backticks (stdout, trailing newline stripped, exit
+      code left in `ENV("?")`). VB6 built command strings and handed them to
+      `Shell`, so this is the period-correct route with the ceremony removed.
+- [x] **`$` in front of a backtick opts into interpolation.** Writing
+      ``$`curl "$url"` `` evaluates like a string — `$name`, `${name}`, `\$` —
+      while plain backticks stay pure shell text. The pipeline form takes the
+      same marker, and the string form after `|` (legal, but silently *raw*
+      until now) interpolates like every other string.
+- [x] **`SetEnv name, value`** — completes `ENV(name)` in the other direction:
+      the value is visible to `ENV()` and to every command run afterwards, so a
+      plain backtick command can read it as `"$NAME"` and the shell does the
+      quoting. The reserved `"?"` (last exit code) and an empty name are refused.
+      VB6 had no way to hand its own environment to a child.
+- [x] **Tests and docs** — the suite pins the three modes apart: a plain backtick
+      expanding the *shell's* `$name` to nothing, the `$`-marked form expanding
+      the script's, `\$` escaping through to the shell, an undefined variable
+      inside an interpolated command reporting 500, `Capture` and the pipeline
+      string form, and `SetEnv` reaching both `ENV()` and a child process.
+      README gained the three-routes section and the lexical rule, and
+      `examples/env_report.btm` runs every route end to end.
+
+Why opt-in, and not "backticks interpolate, `\$` escapes": inside a shell command
+there is no spare punctuation. `$` is the shell's; `@` is `user@host`; `~` is
+tilde expansion; `\` is escaping; `#` starts a comment at a word start; `^`
+anchors a regex; `%name%` collides with `date +%Y%m%d`; `{name}` collides with the
+odd single-identifier `awk`/`jq` block. A marker makes the mode visible at the
+call site and leaves every existing script's meaning alone — silently redefining
+`$HOME` inside backticks is the one break this design refuses to make.
+
+Deferred, deliberately: `UnsetEnv` (setting a variable to `""` is not the same as
+removing it, so it is a real gap — nobody has needed it yet), an `Exec(cmd,
+args...)` argv form that bypasses the shell entirely, and scoped environment
+blocks (`WithEnv ... End WithEnv`).
 
 ---
 

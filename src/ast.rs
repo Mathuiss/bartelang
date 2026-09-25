@@ -26,10 +26,14 @@ pub enum Expr {
     },
     /// A prefix `-`, `+` or `Not`.
     UnaryOp { operator: Token, right: Box<Expr> },
-    /// The content of a `` `...` `` command substitution.
-    ShellCommand(String),
+    /// The content of a `` `...` `` command substitution, or of the command on
+    /// the right of a pipe.
+    ShellCommand(CommandText),
     /// `expr | \`cmd\`` - pipe a Bartelang value into a shell's stdin.
-    Pipeline { input: Box<Expr>, command: String },
+    Pipeline {
+        input: Box<Expr>,
+        command: CommandText,
+    },
     /// `Name(args)` - a built-in, a user procedure, or a subscript when the
     /// name turns out to be an array.
     FunctionCall { name: String, args: Vec<Expr> },
@@ -49,6 +53,21 @@ pub enum Expr {
         member: String,
         args: Vec<Expr>,
     },
+}
+
+/// The text of a command handed to `sh -c`.
+///
+/// Plain backticks are [`CommandText::Literal`]: the text reaches the shell
+/// exactly as typed, `$` and all.  Writing a `$` immediately before the
+/// backtick opts that command into string interpolation, so `$name`, `${name}`
+/// and `\$` mean what they mean inside a double-quoted string - which also
+/// means a shell variable needs `\$` to get through untouched.
+#[derive(Clone, Debug)]
+pub enum CommandText {
+    /// `` `cmd` `` - handed to the shell verbatim.
+    Literal(String),
+    /// `` $`cmd $var` `` - the parts are evaluated and concatenated first.
+    Interpolated(Vec<Expr>),
 }
 
 /// How a file channel was opened.

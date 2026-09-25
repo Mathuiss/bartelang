@@ -10,8 +10,8 @@ use std::rc::Rc;
 use std::thread;
 
 use crate::ast::{
-    CasePattern, Expr, FileMode, LoopCondition, PrintItem, Program, SelectArm, Separator, Stmt,
-    peel,
+    CasePattern, CommandText, Expr, FileMode, LoopCondition, PrintItem, Program, SelectArm,
+    Separator, Stmt, peel,
 };
 use crate::error::BrtError;
 use crate::lexer::Token;
@@ -1078,13 +1078,15 @@ impl Interp {
             }
 
             Expr::ShellCommand(command) => {
-                let output = self.run_shell(command, None)?;
+                let command = self.command_text(command)?;
+                let output = self.run_shell(&command, None)?;
                 Ok(Variant::String(output))
             }
 
             Expr::Pipeline { input, command } => {
                 let data = self.eval(input)?.as_string()?;
-                let output = self.run_shell(command, Some(data))?;
+                let command = self.command_text(command)?;
+                let output = self.run_shell(&command, Some(data))?;
                 Ok(Variant::String(output))
             }
 
@@ -1360,9 +1362,29 @@ impl Interp {
         }
     }
 
+    /// Turns a command substitution's text into the string the shell will see:
+    /// verbatim for plain backticks, interpolated when written with a `$`.
+    fn command_text(&mut self, text: &CommandText) -> Result<String, BrtError> {
+        match text {
+            CommandText::Literal(command) => Ok(command.clone()),
+            CommandText::Interpolated(parts) => {
+                let mut command = String::new();
+                for part in parts {
+                    command.push_str(&self.eval(part)?.display_string());
+                }
+                Ok(command)
+            }
+        }
+    }
+
     /// Runs `sh -c <command>`, optionally feeding `stdin_data` into it, and
-    /// returns stdout with the trailing newline removed.
-    fn run_shell(&mut self, command: &str, stdin_data: Option<String>) -> Result<String, BrtError> {
+    /// returns stdout with the trailing newline removed.  Public within the
+    /// crate so that the `Capture` builtin is the same shell path as backticks.
+    pub(crate) fn run_shell(
+        &mut self,
+        command: &str,
+        stdin_data: Option<String>,
+    ) -> Result<String, BrtError> {
         let mut child = Command::new("sh")
             .arg("-c")
             .arg(command)
@@ -2121,6 +2143,90 @@ End If
     fn an_object_without_a_default_member_cannot_be_indexed() {
         let error = run("Dim c\nSet c = CreateObject(\"Collection\")\nc(1) = 5\n").unwrap_err();
         assert_eq!(error.number, 438);
+    }
+
+    // ------------------------- Milestone 8: commands and the environment
+
+    #[test]
+    fn plain_backticks_stay_shell_text_and_the_dollar_form_interpolates() {
+        run(r#"
+Dim btProbe
+Let btProbe = "unix"
+Dim literal
+Let literal = `printf '<%s>' $btProbe`
+If literal <> "<>" Then
+    Let crash = 1 / 0
+End If
+Dim expanded
+Let expanded = $`printf '<%s>' $btProbe`
+If expanded <> "<unix>" Then
+    Let crash = 1 / 0
+End If
+"#).unwrap();
+    }
+
+    #[test]
+    fn a_shell_variable_can_be_escaped_inside_an_interpolated_command() {
+        // `\$btProbe` reaches the shell as `$btProbe`, which expands the
+        // environment's (unset) variable and prints nothing.  If the escape
+        // were lost, the interpreter would interpolate it instead.
+        run(r#"
+Dim btProbe
+Let btProbe = "interpolated"
+Dim escaped
+Let escaped = $`printf '<%s>' \$btProbe`
+If escaped <> "<>" Then
+    Let crash = 1 / 0
+End If
+"#).unwrap();
+    }
+
+    #[test]
+    fn an_undefined_variable_in_an_interpolated_command_is_reported() {
+        let error = run("Dim x\nLet x = $`echo $btMissingVariable`\n").unwrap_err();
+        assert_eq!(error.number, 500);
+    }
+
+    #[test]
+    fn capture_is_a_command_substitution_from_a_string() {
+        run(r#"
+Dim word
+Let word = "unix"
+Dim captured
+Let captured = Capture("printf '%s' " & word)
+If captured <> "unix" Then
+    Let crash = 1 / 0
+End If
+If ENV("?") <> 0 Then
+    Let crash = 1 / 0
+End If
+"#).unwrap();
+    }
+
+    #[test]
+    fn the_pipeline_string_form_interpolates() {
+        run(r#"
+Dim word
+Let word = "unix"
+Dim piped
+Let piped = "" | "printf 'hi %s' $word"
+If piped <> "hi unix" Then
+    Let crash = 1 / 0
+End If
+"#).unwrap();
+    }
+
+    #[test]
+    fn set_env_refuses_an_empty_or_reserved_name() {
+        let empty = run("SetEnv \"\", \"3\"\n").unwrap_err();
+        assert_eq!(empty.number, 5);
+        let reserved = run("SetEnv \"?\", \"3\"\n").unwrap_err();
+        assert_eq!(reserved.number, 5);
+        assert!(
+            reserved.message.contains("exit code"),
+            "{}",
+            reserved.message
+        );
     }
 }
 

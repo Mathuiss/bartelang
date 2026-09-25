@@ -114,7 +114,10 @@ bartelang: syntax error in script.btm at line 2, column 15: expected ')', found 
   typed, including the newlines next to the delimiters — so `Trim` is usually
   what you want. Interpolation still applies.
 - **Command substitution.** `` `...` `` is captured verbatim, so quotes inside it
-  are not comments.
+  are not comments and a `$` belongs to the shell. Writing a `$` immediately
+  before the backtick opts that command into interpolation instead: `$name`,
+  `${name}` and `\$` work exactly as they do in a string, so a shell variable
+  needs `\$` to get through.
 - **File channels.** `#` introduces a file number, which may be any expression:
   `#1`, `#channel`, `#FreeFile()`.
 
@@ -332,6 +335,15 @@ Let who = `uname -n`                    ' command substitution, stdout back to a
 Dim shout
 Let shout = "hello unix" | `tr '[a-z]' '[A-Z]'`   ' pipe a value into a command's stdin
 
+Dim url
+Let url = "https://wttr.in/Delft?format=3"
+Debug.Print $`curl -s "$url"`           ' a $ before the backtick: $url is the script's
+
+SetEnv "BT_GREETING", "hello"
+Debug.Print `printf '%s' "$BT_GREETING"` ' SetEnv feeds plain shell text; the shell quotes it
+
+Debug.Print Capture("printf '%s' " & url)  ' the same substitution, built from a string
+
 Dim result
 Set result = CreateObject("WScript.Shell").Exec("ls -l /nonexistent")
 Debug.Print result.StdOut               ' and .StdErr, .ExitCode, .Status
@@ -342,11 +354,28 @@ Debug.Print ENV("?")                    ' integer exit code of the last shell co
 Debug.Print ENV("HOME")                 ' any environment variable
 ```
 
-Backtick output has its trailing newline stripped. Commands run through `sh -c`
-with stdin closed unless a pipeline supplies data. Because Bartelang is meant to
-be a real Unix citizen it restores the default `SIGPIPE` disposition, so
-`bartelang run x.btm | head` exits quietly instead of panicking, and pipeline
-payloads are written from a helper thread so large streams cannot deadlock.
+There are three ways to get a value into a command, and they compose:
+
+- **A plain backtick command is shell text.** `` `echo $HOME` `` hands `$HOME` to
+  the shell, exactly as typed — nothing is interpolated.
+- **`$` in front of the backtick interpolates like a string.** `$name`,
+  `${name}` and `\$` behave as they do inside `"..."`, so `$` now means the
+  script's variable and the shell's version needs `\$`.
+- **`SetEnv name, value` sets the environment** for `ENV()` and for every
+  command run afterwards, which is the quoting-safe route: the value never
+  becomes command text, and the shell's own `"$NAME"` quoting applies.
+
+All three routes, plus the `\$` escape and the exit code, are in
+`examples/env_report.btm`.
+
+`Capture(command)` is a command substitution written as a string — the same
+semantics as backticks, for when the command is assembled from parts: stdout
+comes back with its trailing newline stripped, and the exit code is left in
+`ENV("?")`. Commands run through `sh -c` with stdin closed unless a pipeline
+supplies data. Because Bartelang is meant to be a real Unix citizen it restores
+the default `SIGPIPE` disposition, so `bartelang run x.btm | head` exits quietly
+instead of panicking, and pipeline payloads are written from a helper thread so
+large streams cannot deadlock.
 
 ### Objects
 
@@ -433,7 +462,8 @@ suppresses the line ending.
 
 ### Built-in functions
 
-- **Globals:** `ARGS(x)`, `ENV(name)`, `InputBox(prompt)`, `CreateObject("HTTP")`
+- **Globals:** `ARGS(x)`, `ENV(name)`, `SetEnv name, value`, `Capture(command)`,
+  `InputBox(prompt)`, `CreateObject("HTTP")`
 - **Strings:** `Len`, `Left`, `Right`, `Mid`, `InStr`, `InStrRev`, `UCase`, `LCase`,
   `Trim`, `LTrim`, `RTrim`, `Replace`, `Space`, `String`, `Chr`, `Asc`
 - **Conversions:** `Val`, `Str`, `CStr`, `CInt`, `CLng`, `CDbl`, `CSng`, `CBool`,
@@ -496,11 +526,15 @@ line numbers, and broken-pipe handling. For includes it covers declarations
 shared in both directions, include-once diamonds, cycle chains, the resolution
 order with `-I` and `$BARTELANG_PATH`, duplicate declarations, and an error
 raised inside an included file naming that file — both in the CLI output and
-through `Err.File`.
+through `Err.File`. For commands it covers plain backticks staying shell-literal,
+`$`-marked interpolation and its `\$` escape, an undefined variable inside an
+interpolated command, `Capture` and the pipeline string form, and `SetEnv`
+reaching both `ENV()` and a child process.
 
-`examples/tour.btm`, `examples/log_stats.btm` and `examples/count_words.btm` are
-executed end to end by the suite. `examples/sys_fetch.btm` is parsed by the suite
-and also run by hand against `wttr.in`.
+`examples/tour.btm`, `examples/log_stats.btm`, `examples/count_words.btm` and
+`examples/env_report.btm` are executed end to end by the suite.
+`examples/sys_fetch.btm` is parsed by the suite and also run by hand against
+`wttr.in`.
 
 ## Source layout
 
@@ -523,7 +557,8 @@ src/builtins.rs   the native standard library
 src/lib.rs        library surface: load / load_file / execute / execute_file
 src/main.rs       CLI
 tests/cli.rs      end-to-end tests that drive the real binary
-examples/        sys_fetch.btm, tour.btm, log_stats.btm, count_words.btm + lib/text.btm
+examples/        sys_fetch.btm, tour.btm, log_stats.btm, count_words.btm,
+                 env_report.btm + lib/text.btm
 ```
 
 ## Implementation notes and deliberate decisions
@@ -577,6 +612,16 @@ examples/        sys_fetch.btm, tour.btm, log_stats.btm, count_words.btm + lib/t
 - **`Err.File` is a Bartelang addition.** VB6's `Err` had no file to name — one
   file per program — so `Err.Line` alone becomes ambiguous the moment a program
   has includes.
+- **Command interpolation is opt-in.** A plain backtick command is shell text,
+  `$` and all; the `$`-prefixed form interpolates like a string. There is no
+  spare punctuation inside a shell command — `@` is `user@host`, `~` is tilde
+  expansion, `^` anchors a regex, `\%name\%` collides with `date +%Y%m%d` — so the
+  language makes the mode explicit instead of repurposing a character, and every
+  existing script keeps working.
+- **`SetEnv` writes the environment.** VB6 could not hand its own environment to
+  a child; with plain backticks being pure shell text, the environment is the
+  quoting-safe way to get a value into a command. The reserved `"?"` slot (the
+  last exit code) is refused.
 - **TLS is rustls, not OpenSSL.** `reqwest` 0.13 defaults to rustls with
   `aws-lc-rs`, verifying against the platform trust store, so HTTPS still honours
   the system's certificates. Building needs a C toolchain and cmake (for
