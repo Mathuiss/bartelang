@@ -30,6 +30,9 @@ Install the released binary from crates.io:
 cargo install bartelang
 ```
 
+Releases follow `<major>.<functionality>.<hotfix>`: new functionality bumps the
+middle number, a fix the last, and a breaking change the major.
+
 Or build from a source checkout:
 
 ```sh
@@ -48,7 +51,7 @@ use bartelang::{Interp, execute, load};
 // Parse without running...
 let loaded = load("Debug.Print \"hello from bartelang\"\n")?;
 let mut interp = Interp::new(vec![]);
-interp.run(&loaded.program)?;
+interp.run_loaded(&loaded)?;
 
 // ...or parse and run in one step, then inspect the final state.
 let interp = execute("Dim code\nLet code = `exit 4`\n", vec![])?;
@@ -56,27 +59,35 @@ assert_eq!(interp.last_exit_code(), 4);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+A program that uses `Include` loads through `load_file` (or a `Loader`
+carrying include directories), which resolves the paths and keeps every file's
+text so errors can name it.
+
 ## CLI
 
-- `bartelang run <file.btm> [args...]` — parse and execute. `args` populate `ARGS`.
-- `bartelang parse <file.btm>` — dump the parsed AST with `{:#?}`.
+- `bartelang run [-I <dir>]... <file.btm> [args...]` — parse and execute. `args` populate `ARGS`.
+- `bartelang parse [-I <dir>]... <file.btm>` — dump the parsed AST with `{:#?}`.
 - `bartelang version`, `bartelang help`
 - `bartelang script.btm` — shorthand for `run` when the path exists or ends in `.btm`.
 
-Exit status: `0` on success, `1` for a syntax or runtime error, `2` for a usage
-problem.
+`-I` adds a directory to the include search path (repeatable; `-I<dir>` works
+too), and `$BARTELANG_PATH` adds more, colon-separated. See
+[Modules and includes](#modules-and-includes).
 
-Runtime errors name the line and quote it back:
+Exit status: `0` on success, `1` for a syntax, load or runtime error, `2` for a
+usage problem (including a script that cannot be read at all).
+
+Errors name the file they came from and quote the line back:
 
 ```text
-bartelang: runtime error 11 at line 3: Division by zero
+bartelang: runtime error 11 in lib/math.btm at line 3: Division by zero
   3 | Let y = 1 / 0
 ```
 
 Syntax errors point a caret at the exact column:
 
 ```text
-bartelang: syntax error at line 2, column 15: expected ')', found end of line
+bartelang: syntax error in script.btm at line 2, column 15: expected ')', found end of line
   2 | Let x = (1 + 2
     |              ^
 ```
@@ -93,6 +104,8 @@ bartelang: syntax error at line 2, column 15: expected ')', found end of line
 - **Line continuation.** A space, an underscore and a newline (` _\n`) is
   invisible to the lexer.
 - **Comments.** `'` ignores the rest of the line.
+- **Shebang.** A leading `#!` line is ignored, so a script can be run directly:
+  `#!/usr/bin/env bartelang`.
 - **Strings.** `"..."`, with `""` inside a string meaning a literal quote. `$name`
   and `${name}` interpolate a variable's value; `\$` escapes a literal dollar
   sign. A single-line string may not span lines.
@@ -240,6 +253,43 @@ There is no `return` keyword. Declarations are hoisted, so a procedure may be
 called before it appears in the file. Parameters are `ByVal`; `ByVal`/`ByRef`
 prefixes and `As <Type>` suffixes are accepted and ignored.
 
+### Modules and includes
+
+A program can span several files. `Include "path.btm"` brings another file's
+declarations in, exactly as if they had been typed at that point:
+
+```vb
+' report.btm
+Include "lib/text.btm"
+
+Banner "monthly report"
+Debug.Print "words: " & WordCount(sentence)
+```
+
+- **The path is a string literal**, resolved once at load time. A variable or a
+  glob is a syntax error.
+- **Top level only.** An `Include` inside an `If` or a procedure is a syntax
+  error, so everything it brings in is hoisted like any other declaration.
+- **One program, one namespace.** `Sub`, `Function`, `Type` and `Const` from an
+  included file are visible everywhere, and a library may call back into the
+  script that included it. A name defined twice — in one file or across files —
+  is error `1005`, reported with both places; VB6's silent last-wins is how a
+  library quietly stops working.
+- **A file is read once** per canonical path, so the diamond (`a` includes `b`
+  and `c`, and both include `lib`) runs `lib`'s top-level code once. A cycle is
+  error `1004`, which prints the chain.
+- **Top-level code runs at the include point**, in include order, so a library
+  can set up state before the script continues.
+- **Resolution order:** an absolute path; else the including file's directory;
+  else each `-I <dir>`; else each `$BARTELANG_PATH` entry. The current directory
+  is deliberately not searched, so a script behaves the same from any shell — and
+  when a name exists there but not on the search path, the error says so.
+- **Every file is a `.btm`.** A library is a script whose top level happens to
+  hold only declarations; there is no second extension to learn.
+
+Because every file is kept, an error inside an included file names that file and
+quotes its line, and `Err.File` reports it to a `Catch` block.
+
 ### Error handling and the `Err` object
 
 ```vb
@@ -263,8 +313,14 @@ code fail on purpose, which is what makes `Catch` useful across a library rather
 than only around interpreter calls.
 
 The `Err` object carries `Number`, `Description` (also spelled `Message`),
-`Source` and `Line`. `Catch <name>` binds the same object under the name you
-chose. `Err.Clear` resets it; otherwise it keeps the last error, as in VB6.
+`Source`, `Line` and `File`. `Catch <name>` binds the same object under the name
+you chose. `Err.Clear` resets it; otherwise it keeps the last error, as in VB6.
+
+`Line` is a line number *within* `File` — the included file the failing
+statement came from, named the way the loader names it, or the entry script.
+VB6 had one file per program, so a bare line number was enough; with includes it
+is not, which is why `File` exists. It is empty when the program was loaded from
+a string (`load` / `execute`), where there is no file to name.
 
 ### Bash integration
 
@@ -426,20 +482,24 @@ stdin — so it works interactively and with piped input alike.
 
 ## Verified behaviour
 
-`cargo test` runs the whole suite: unit tests across the lexer, parser, value,
-object, interpreter and library modules, end-to-end tests that drive the real
-binary, and a doctest that compiles the Rust example above — so this document
-cannot drift far from the code. Run `cargo test` for the current count.
+`cargo test` runs the whole suite: unit tests across the lexer, parser, loader,
+value, object, interpreter and library modules, end-to-end tests that drive the
+real binary, and a doctest that compiles the Rust example above — so this
+document cannot drift far from the code. Run `cargo test` for the current count.
 
 The suite covers command substitution and exit codes, a ~1.1 MB pipeline payload
 (which would deadlock if writing stdin and reading stdout raced), file channel
 round-trips including `Write`/`Input` records, records and their copy semantics,
 recursion, every documented runtime error, every documented call syntax, error
-line numbers, and broken-pipe handling.
+line numbers, and broken-pipe handling. For includes it covers declarations
+shared in both directions, include-once diamonds, cycle chains, the resolution
+order with `-I` and `$BARTELANG_PATH`, duplicate declarations, and an error
+raised inside an included file naming that file — both in the CLI output and
+through `Err.File`.
 
-`examples/tour.btm` and `examples/log_stats.btm` are executed end to end by the
-suite. `examples/sys_fetch.btm` is parsed by the suite and also run by hand
-against `wttr.in`.
+`examples/tour.btm`, `examples/log_stats.btm` and `examples/count_words.btm` are
+executed end to end by the suite. `examples/sys_fetch.btm` is parsed by the suite
+and also run by hand against `wttr.in`.
 
 ## Source layout
 
@@ -448,6 +508,7 @@ src/error.rs      numbered VB-style errors, diagnostics, and error rendering
 src/lexer.rs      source text -> tokens
 src/ast.rs        Expr / Stmt / Program
 src/parser.rs     recursive-descent parser
+src/loader.rs     Include resolution, the source map, and duplicate checks
 src/value.rs      Variant, the VB coercion quirks, and value-vs-reference rules
 src/record.rs     user-defined record types
 src/datetime.rs   local wall-clock time and date arithmetic
@@ -458,10 +519,10 @@ src/objects.rs    the BartObject trait, the object table, and the HTTP client
 src/objects/      filesystem, collections, regex and process objects
 src/interp.rs     tree-walk interpreter, environments, shell engine, file channels
 src/builtins.rs   the native standard library
-src/lib.rs        library surface: load / execute / emit_line
+src/lib.rs        library surface: load / load_file / execute / execute_file
 src/main.rs       CLI
 tests/cli.rs      end-to-end tests that drive the real binary
-examples/        sys_fetch.btm, tour.btm and log_stats.btm
+examples/        sys_fetch.btm, tour.btm, log_stats.btm, count_words.btm + lib/text.btm
 ```
 
 ## Implementation notes and deliberate decisions
@@ -496,6 +557,25 @@ examples/        sys_fetch.btm, tour.btm and log_stats.btm
   VB6 in the two places above; `Format`'s date masks use `nn` for minutes; the
   comma in a `Print` list is a tab rather than a fixed 14-column zone; `Run` waits
   by default, where VB6 returned a meaningless 0 unless told to wait.
+- **`Include` is a statement, not a metacommand.** QBasic's `'$INCLUDE:` was the
+  era-correct spelling and is deliberately unsupported: a comment that sometimes
+  executes contradicts the language's own rule that `'` ignores the rest of the
+  line. `Include "path.btm"` is greppable, and takes a literal path only, so it
+  resolves before anything runs.
+- **Includes resolve from the file, not the shell.** The including file's
+  directory comes first, then `-I` directories, then `$BARTELANG_PATH`; the
+  current directory is never searched implicitly. `Open` stays CWD-relative (as
+  in VB6), and when the two rules would disagree the diagnostic says which one
+  applied.
+- **A file is included once, and a cycle is an error.** Diamonds are normal in a
+  library, so re-including is a no-op; a cycle is reported with its chain rather
+  than quietly producing half a program.
+- **Duplicate declarations are load errors.** VB6 kept the last definition
+  silently; across files that is how a library stops being called without anyone
+  noticing.
+- **`Err.File` is a Bartelang addition.** VB6's `Err` had no file to name — one
+  file per program — so `Err.Line` alone becomes ambiguous the moment a program
+  has includes.
 - **Known gap.** Assigning *through* a non-variable member receiver
   (`points(1).X = 5`) is not supported: reading works, writing would need an
   lvalue path in the interpreter.
@@ -513,7 +593,11 @@ Codes follow VB6 wherever one exists:
   `450` wrong number of arguments, `457` key already in use or not found.
 - Bartelang-specific: `500` variable not defined, `501` assignment to a constant,
   `1001` the shell could not be spawned, `1002` HTTP transport failure,
-  `1003` call-stack overflow.
+  `1003` call-stack overflow, `1004` circular include, `1005` declaration defined
+  more than once.
+
+A missing `Include` reports `53` and lists every directory it searched; the
+other load-time failures use the Bartelang-specific numbers above.
 
 ### Limits
 

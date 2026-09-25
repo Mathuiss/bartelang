@@ -2,6 +2,12 @@
 
 What we want to add to Bartelang next, why, and in what order.
 
+**Bartelang is released.** From `1.0.0` on, the version number is
+`<major>.<functionality>.<hotfix>` — a breaking change bumps the major, a new
+capability the middle number, a fix the last. The milestones below are the record
+of how the language got here; everything still to come lands as a functionality
+update, under the same two rules.
+
 Every item below is something that closes a real gap in the language, not a
 feature added for nostalgia's sake. The VB6 surface is a *design language* — it
 tells us how things should read — but nothing goes in unless it earns its keep on
@@ -33,6 +39,12 @@ Two rules for every step:
   This is already in effect: `MsgBox` was removed, and `CreateObject("HTTP")`
   replaced the `MSXML2.XMLHTTP` ProgID.
 - **1-based indexing everywhere** — arrays, string positions, and collections.
+- **Released, and versioned `<major>.<functionality>.<hotfix>`.** `1.0.0` is the
+  first version under this policy (0.1.0 was the pre-release): a breaking change
+  bumps the major, new functionality the middle number, and a fix the last, so
+  `cargo install bartelang` and a pinned `Cargo.toml` both mean something
+  predictable. The version is bumped in the same step as the change, not at
+  release time.
 
 ### A note on object naming
 
@@ -290,6 +302,61 @@ interpreter — a real follow-up, and listed under *Open questions*.
 
 ---
 
+## Milestone 7 — More than one file  ✅ done
+
+A program used to be one file.  `WScript.Shell.Exec "bartelang lib.btm"` runs a
+*second* interpreter, so procedures, constants and records could not be shared -
+the last thing standing between Bartelang and a reusable library.
+
+- [x] **`Include "path.btm"`** — a real statement in the shape of VB6's own
+      file-taking verbs (`Open`, `Kill`, `FileCopy`).  The path is a string
+      literal resolved at load time.  A file is read once per canonical path, so
+      diamond-shaped dependencies just work and a library's top-level code runs
+      once; a cycle is error `1004` and prints the chain.  The file's statements
+      are inserted at the `Include`: declarations hoist as they do in one file,
+      top-level statements run once, in include order.  `Include` is legal only
+      at a file's top level.  All files are `.btm` — a library is a script whose
+      top level happens to hold only declarations — so there is no second
+      extension to learn.
+      Rejected: QBasic's `'$INCLUDE:` metacommand — era-correct, but a comment
+      that sometimes executes is a lie in a language whose manual says `'`
+      ignores the rest of the line.  Rejected: `Import`, for namespacing that is
+      not happening.
+- [x] **Resolution that respects the script, not the shell** — absolute path,
+      else relative to the including file, else `-I <dir>` (repeatable), else
+      `$BARTELANG_PATH`.  The CWD is deliberately not searched, and when a name
+      does exist there the error says so and points at `-I .`.
+- [x] **Diagnostics that name the file** — `Loaded` grew a `SourceMap`, and
+      `Stmt::Located` a unit id, so `runtime error 11 in lib/math.btm at line 2`
+      quotes *that* file's line, `bartelang parse` shows each statement's unit,
+      and `Err.File` tells a `Catch` block which file failed.  A missing include
+      reuses `53` (listing every directory tried); `1004` is a cycle and `1005` a
+      declaration defined more than once — in one file or across files, at the
+      top level or buried in a block, where it used to be silent last-wins.
+- [x] **Library surface** — `load_file` / `execute_file`, and a `Loader` that
+      carries include directories for embedders.
+- [x] **A `#!` line is skipped**, so `#!/usr/bin/env bartelang` works.  Small,
+      but it is the first thing a Unix user types.
+- [x] **Tests and docs** — hoisting in both directions across files, include-once
+      diamonds, cycle chains, resolution order with `-I` and `$BARTELANG_PATH`,
+      errors inside an included file naming that file (CLI output and
+      `Err.File`), duplicate declarations, and a shipped example:
+      `examples/count_words.btm` with `examples/lib/text.btm`.  README gained a
+      Modules section; the CLI gained `-I` and the usage text.
+
+Behaviour change worth knowing: `Loaded.source_lines` is now the source map
+(`loaded.sources`), `BrtError::render` and `render_syntax_error` take it, and
+`Interp::run_loaded` is what a file-loaded program runs through.  `run` still
+works unchanged — it simply has no file to name.
+
+Deferred, deliberately: module-private state (the VB6-faithful model, where a
+module's `Dim`s are private to it — it needs per-unit environments, and would
+arrive together with `Private Sub` and qualified calls), dynamic
+`ExecuteGlobal`-style loading, project manifests in the `.vbp` sense, and glob
+includes.
+
+---
+
 ## Out of scope, deliberately
 
 Recorded here so the language stays coherent and nobody re-litigates it by
@@ -353,3 +420,10 @@ Once the milestones land:
 7. **New:** assigning *through* a non-variable member receiver
    (`points(1).X = 5`) needs an lvalue path in the interpreter.  Reading such a
    receiver works today.
+8. **~~Should `Err` learn the file name?~~** *Resolved: yes.*  `Err.File` joins
+   `Err.Line`, because a bare line number stops meaning anything the moment a
+   program has more than one file.  It is empty for the string API, where there
+   is no file to name.
+9. **~~A second extension for include-only libraries (`.bti`)?~~** *Resolved:
+   no.*  Every file is `.btm`; a library is a script whose top level happens to
+   hold only declarations.

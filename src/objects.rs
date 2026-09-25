@@ -298,6 +298,9 @@ pub struct ErrObject {
     /// The source line the error came from, or 0 when the interpreter did not
     /// know - which is what VB6's `Erl` reported outside a handler.
     pub line: i64,
+    /// The file the error came from, as the loader names it (for example
+    /// `lib/math.btm`), or empty when the program was not loaded from files.
+    pub file: String,
 }
 
 impl Default for ErrObject {
@@ -314,11 +317,13 @@ impl ErrObject {
             description: String::new(),
             source: String::new(),
             line: 0,
+            file: String::new(),
         }
     }
 
-    /// Fills the object in from a failed statement.
-    pub fn set_from(&mut self, error: &BrtError) {
+    /// Fills the object in from a failed statement.  `file` is the name of the
+    /// source file the failing statement came from, when there is one.
+    pub fn set_from(&mut self, error: &BrtError, file: Option<&str>) {
         self.number = error.number as i64;
         self.description = error.message.clone();
         self.source = error
@@ -326,6 +331,7 @@ impl ErrObject {
             .clone()
             .unwrap_or_else(|| "Bartelang".to_string());
         self.line = error.line.unwrap_or(0) as i64;
+        self.file = file.unwrap_or("").to_string();
     }
 
     /// Resets the object, as `Err.Clear` does.
@@ -334,6 +340,7 @@ impl ErrObject {
         self.description.clear();
         self.source.clear();
         self.line = 0;
+        self.file.clear();
     }
 }
 
@@ -345,7 +352,9 @@ impl BartObject for ErrObject {
     fn member_kind(&self, name: &str) -> Member {
         match name.to_ascii_lowercase().as_str() {
             "clear" | "raise" => Member::Method,
-            "number" | "description" | "message" | "source" | "line" => Member::Property,
+            "number" | "description" | "message" | "source" | "line" | "file" => {
+                Member::Property
+            }
             _ => Member::Unknown,
         }
     }
@@ -397,6 +406,9 @@ impl BartObject for ErrObject {
             "description" | "message" => Ok(Variant::String(self.description.clone())),
             "source" => Ok(Variant::String(self.source.clone())),
             "line" => Ok(Variant::Int(self.line)),
+            // Bartelang addition: VB6's `Err` could not say which file failed,
+            // which stops mattering the moment a program has more than one.
+            "file" => Ok(Variant::String(self.file.clone())),
             other => Err(BrtError::no_such_member(&self.type_name(), other)),
         }
     }
@@ -514,7 +526,7 @@ mod tests {
     #[test]
     fn err_object_exposes_message_and_description() {
         let mut err = ErrObject::new();
-        err.set_from(&BrtError::new(11, "Division by zero"));
+        err.set_from(&BrtError::new(11, "Division by zero"), Some("lib/math.btm"));
         assert_eq!(
             err.get_property("message").unwrap().display_string(),
             "Division by zero"
@@ -524,5 +536,9 @@ mod tests {
             "Division by zero"
         );
         assert_eq!(err.get_property("number").unwrap().to_int().unwrap(), 11);
+        assert_eq!(
+            err.get_property("file").unwrap().display_string(),
+            "lib/math.btm"
+        );
     }
 }

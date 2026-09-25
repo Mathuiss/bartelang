@@ -15,11 +15,13 @@ use crate::ast::{
 };
 use crate::error::BrtError;
 use crate::lexer::Token;
+use crate::loader::SourceMap;
 use crate::objects::{BartObject, ErrObject, Member};
 use crate::parser::is_builtin;
 use crate::random::Rng;
 use crate::record::TypeDef;
 use crate::value::{compare, Num, Variant};
+use crate::Loaded;
 
 /// Global interpreter state, as specified: variables, vintage file channels and
 /// the exit status of the last shell command.
@@ -106,7 +108,8 @@ enum Iteration {
 /// channels and the object table.
 ///
 /// Build one with [`Interp::new`], then hand it a [`Program`] via
-/// [`Interp::run`].
+/// [`Interp::run`] — or a whole loaded program, source map included, via
+/// [`Interp::run_loaded`], which is what the CLI uses.
 pub struct Interp {
     pub(crate) globals: Environment,
     frames: Vec<Frame>,
@@ -121,6 +124,10 @@ pub struct Interp {
     /// Record types declared with `Type ... End Type`.
     types: HashMap<String, Rc<TypeDef>>,
     pub(crate) cli_args: Vec<String>,
+    /// The source files the running program came from, so an error can name
+    /// the file it happened in.  `None` when the program was not loaded from
+    /// files (the string API), in which case `Err.File` stays empty.
+    sources: Option<Rc<SourceMap>>,
     depth: usize,
     max_depth: usize,
 }
@@ -143,9 +150,18 @@ impl Interp {
             rng: Rng::default(),
             types: HashMap::new(),
             cli_args,
+            sources: None,
             depth: 0,
             max_depth: 256,
         }
+    }
+
+    /// Executes a loaded, multi-file program, wiring up its source map so that
+    /// errors name the file they came from - both in the CLI's diagnostics and
+    /// in `Err.File` inside a `Catch` block.
+    pub fn run_loaded(&mut self, loaded: &Loaded) -> Result<(), BrtError> {
+        self.sources = Some(Rc::new(loaded.sources.clone()));
+        self.run(&loaded.program)
     }
 
     /// Executes a program.  `Sub`/`Function` declarations are hoisted first, so
@@ -363,15 +379,20 @@ impl Interp {
             // escapes with the line it started on.  Wrappers nest, and the
             // innermost one attaches first, so the reported line is the one that
             // actually failed rather than the enclosing block's.
-            Stmt::Located { line, inner } => match self.exec_stmt(inner) {
+            Stmt::Located { unit, line, inner } => match self.exec_stmt(inner) {
                 Ok(flow) => Ok(flow),
                 Err(mut error) => {
                     if error.line.is_none() {
                         error.line = Some(*line);
+                        error.unit = Some(*unit);
                     }
                     Err(error)
                 }
             },
+            Stmt::Include { path } => Err(BrtError::invalid_call(format!(
+                "Include \"{path}\" was not expanded: load the program with load_file \
+                 or Loader so the include can be resolved"
+            ))),
             Stmt::Dim { name, type_name } => {
                 // `As <Type>` only means anything when it names a record type;
                 // otherwise the clause is decoration, as it was in VB6.
@@ -1002,8 +1023,14 @@ impl Interp {
     }
 
     fn set_err_object(&mut self, error: &BrtError) -> Rc<RefCell<dyn BartObject>> {
+        let file = error.unit.and_then(|unit| {
+            self.sources
+                .as_ref()
+                .and_then(|sources| sources.name(unit))
+                .map(str::to_string)
+        });
         let mut object = ErrObject::new();
-        object.set_from(error);
+        object.set_from(error, file.as_deref());
         let handle: Rc<RefCell<dyn BartObject>> = Rc::new(RefCell::new(object));
         self.globals
             .variables
@@ -1748,6 +1775,19 @@ End If
         let error = run("Const Limit = 10\nLet Limit = 11\n").unwrap_err();
         assert_eq!(error.number, 501);
         assert!(error.message.contains("constant"), "{}", error.message);
+    }
+
+    #[test]
+    fn err_file_stays_empty_for_the_string_api() {
+        // There is no file to name when the program never touched one, and the
+        // README promises as much; a non-empty `Err.File` would crash here.
+        let loaded = crate::load(
+            "Dim f\nTry\n    Let boom = 1 / 0\nCatch Err\n    Let f = Err.File\nEnd Try\n\
+             If f <> \"\" Then\n    Let crash = 1 / 0\nEnd If\n",
+        )
+        .expect("load");
+        let mut interp = Interp::new(Vec::new());
+        interp.run_loaded(&loaded).expect("the script must not crash");
     }
 
     #[test]

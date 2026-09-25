@@ -1,4 +1,4 @@
-//! Error types shared by the lexer, parser and interpreter.
+//! Error types shared by the lexer, parser, loader and interpreter.
 //!
 //! Bartelang keeps the Visual Basic 6 notion of a *numbered* error, so that the
 //! `Err` object can expose `Err.Number` and `Err.Description` inside a
@@ -18,17 +18,23 @@ pub struct BrtError {
     /// out of the statement that raised it.  `None` for errors raised outside
     /// any statement, such as `Err.Raise` at the prompt.
     pub line: Option<usize>,
+    /// The source *unit* (file) that line belongs to, attached alongside it.
+    /// The renderer resolves it to a name through the program's
+    /// [`SourceMap`](crate::loader::SourceMap); `None` for a single source
+    /// parsed straight from a string.
+    pub unit: Option<usize>,
 }
 
 impl BrtError {
-    /// A numbered error with no source and no line; the interpreter fills the
-    /// line in as the error unwinds.
+    /// A numbered error with no source and no location; the interpreter fills
+    /// the location in as the error unwinds.
     pub fn new(number: i32, message: impl Into<String>) -> Self {
         BrtError {
             number,
             message: message.into(),
             source: None,
             line: None,
+            unit: None,
         }
     }
 
@@ -38,19 +44,35 @@ impl BrtError {
         self
     }
 
-    /// The display form used by the CLI, including the line when we know it.
-    pub fn render(&self, source_lines: &[String]) -> String {
-        let mut out = match self.line {
-            Some(line) => format!(
+    /// The one-line form, naming the file when the source map knows it.
+    pub fn headline(&self, file: Option<&str>) -> String {
+        match (file, self.line) {
+            (Some(file), Some(line)) => format!(
+                "runtime error {} in {file} at line {line}: {}",
+                self.number, self.message
+            ),
+            (Some(file), None) => {
+                format!("runtime error {} in {file}: {}", self.number, self.message)
+            }
+            (None, Some(line)) => format!(
                 "runtime error {} at line {line}: {}",
                 self.number, self.message
             ),
-            None => format!("runtime error {}: {}", self.number, self.message),
-        };
+            (None, None) => format!("runtime error {}: {}", self.number, self.message),
+        }
+    }
+
+    /// The display form used by the CLI, including the quoted source line.
+    pub fn render(&self, sources: &crate::loader::SourceMap) -> String {
+        let file = self.unit.and_then(|unit| sources.name(unit));
+        let mut out = self.headline(file);
         if let Some(line) = self.line {
-            if line >= 1 && line <= source_lines.len() {
+            // A unit-less error still belongs to unit 0 when the program came
+            // from a single string, so the quote keeps working there.
+            let unit = self.unit.unwrap_or(0);
+            if let Some(text) = sources.line(unit, line) {
                 // No caret: a line is what the interpreter knows, not a column.
-                out.push_str(&format!("\n  {line} | {}", source_lines[line - 1]));
+                out.push_str(&format!("\n  {line} | {text}"));
             }
         }
         out
@@ -197,6 +219,9 @@ pub struct SyntaxError {
     pub message: String,
     pub line: usize,
     pub col: usize,
+    /// Which source unit (file) of a multi-file program this error is in.
+    /// `None` for a single source parsed directly from a string.
+    pub unit: Option<usize>,
 }
 
 impl SyntaxError {
@@ -206,17 +231,34 @@ impl SyntaxError {
             message: message.into(),
             line,
             col,
+            unit: None,
+        }
+    }
+
+    /// Records which source unit of a loaded program this error belongs to.
+    pub fn in_unit(mut self, unit: usize) -> Self {
+        self.unit = Some(unit);
+        self
+    }
+
+    /// The one-line form, naming the file when the source map knows it.
+    pub(crate) fn headline(&self, file: Option<&str>) -> String {
+        match file {
+            Some(file) => format!(
+                "syntax error in {file} at line {}, column {}: {}",
+                self.line, self.col, self.message
+            ),
+            None => format!(
+                "syntax error at line {}, column {}: {}",
+                self.line, self.col, self.message
+            ),
         }
     }
 }
 
 impl fmt::Display for SyntaxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "syntax error at line {}, column {}: {}",
-            self.line, self.col, self.message
-        )
+        write!(f, "{}", self.headline(None))
     }
 }
 
@@ -225,14 +267,16 @@ impl std::error::Error for SyntaxError {}
 /// Renders a syntax error with the offending source line and a caret, e.g.
 ///
 /// ```text
-/// syntax error at line 4, column 13: expected ')'
+/// syntax error in lib/math.btm at line 4, column 13: expected ')'
 ///   4 | Let x = (1 + 2
 ///     |             ^
 /// ```
-pub fn render_syntax_error(err: &SyntaxError, source_lines: &[String]) -> String {
-    let mut out = format!("{err}");
-    if err.line >= 1 && err.line <= source_lines.len() {
-        let text = &source_lines[err.line - 1];
+pub fn render_syntax_error(err: &SyntaxError, sources: &crate::loader::SourceMap) -> String {
+    let file = err.unit.and_then(|unit| sources.name(unit));
+    let mut out = err.headline(file);
+    // An error from a single string has no unit, and its lines live in unit 0.
+    let unit = err.unit.unwrap_or(0);
+    if let Some(text) = sources.line(unit, err.line) {
         let gutter = err.line.to_string();
         let pad = " ".repeat(gutter.len());
         out.push('\n');

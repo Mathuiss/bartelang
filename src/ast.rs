@@ -137,12 +137,26 @@ pub fn peel(stmt: &Stmt) -> &Stmt {
 /// One statement of the language.
 #[derive(Clone, Debug)]
 pub enum Stmt {
-    /// A statement, tagged with the source line it began on.  The parser wraps
-    /// every statement, and the interpreter attaches the innermost line to any
-    /// error that escapes - which is how runtime errors report a line at all.
+    /// A statement, tagged with the source *unit* (file) and line it began on.
+    /// The parser wraps every statement, and the interpreter attaches the
+    /// innermost location to any error that escapes - which is how runtime
+    /// errors report a file and a line at all.  Unit 0 is the entry file.
     Located {
+        unit: usize,
         line: usize,
         inner: Box<Stmt>,
+    },
+    /// extension: `Include "path.btm"` - the declarations of another file
+    /// become part of this program, hoisted exactly as if they had been typed
+    /// here.
+    ///
+    /// The parser only accepts it at the top level of a file, and the path must
+    /// be a string literal, because it is resolved once at load time by the
+    /// loader, before anything runs.  A `Stmt::Include` must never reach the
+    /// interpreter: [`crate::loader::Loader`] expands every one of them.
+    Include {
+        /// The path exactly as written in the source.
+        path: String,
     },
     /// `Dim name [As Type]`
     Dim {

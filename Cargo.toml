@@ -1,10 +1,18 @@
 [package]
 name = "bartelang"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 description = "Bartelang: a 1998 Visual Basic 6 dialect with a Unix stream-processing engine"
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/Mathuiss/bartelang"
+keywords = ["vb6", "visual-basic", "interpreter", "scripting", "unix"]
+categories = [
+    "command-line-utilities",
+    "development-tools",
+    "parser-implementations",
+    "text-processing",
+]
 
 [dependencies]
 # The HTTP object: the interpreter does the request natively, from safe Rust.

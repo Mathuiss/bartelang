@@ -339,7 +339,8 @@ fn syntax_errors_point_at_the_line() {
     let outcome = run(&dir, "Dim x\nLet x = (1 + 2\n", &[]);
     assert_eq!(outcome.code, 1);
     assert!(
-        outcome.stderr.contains("syntax error at line 2, column 15"),
+        outcome.stderr.contains("syntax error in ")
+            && outcome.stderr.contains("script.btm at line 2, column 15"),
         "stderr: {}",
         outcome.stderr
     );
@@ -1378,7 +1379,8 @@ fn runtime_errors_report_the_failing_line() {
     let outcome = run(&dir, "Dim x\nLet x = 1\nLet y = 1 / 0\n", &[]);
     assert_eq!(outcome.code, 1);
     assert!(
-        outcome.stderr.contains("runtime error 11 at line 3"),
+        outcome.stderr.contains("runtime error 11 in ")
+            && outcome.stderr.contains("script.btm at line 3"),
         "stderr: {}",
         outcome.stderr
     );
@@ -1509,4 +1511,385 @@ fn a_mistargeted_exit_reports_which_loop_it_is_in() {
         "stderr: {}",
         outcome.stderr
     );
+}
+
+// --------------------------------------------------------------- includes
+
+/// Writes a file under `dir`, creating parent directories, and returns its path.
+fn write_file(dir: &Path, name: &str, contents: &str) -> PathBuf {
+    let path = dir.join(name);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("create parent directory");
+    }
+    fs::write(&path, contents).expect("write file");
+    path
+}
+
+/// Runs an existing script path, with a chosen working directory and a clean
+/// environment (unless the test supplies `$BARTELANG_PATH` itself).
+fn run_script(dir: &Path, script: &Path, args: &[&str], env: &[(&str, &str)]) -> Outcome {
+    let mut command = Command::new(binary());
+    command
+        .arg("run")
+        .arg(script)
+        .args(args)
+        .current_dir(dir)
+        .env_remove("BARTELANG_PATH");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command.output().expect("spawn bartelang");
+    Outcome {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        code: output.status.code().unwrap_or(-1),
+    }
+}
+
+#[test]
+fn includes_share_procedures_both_ways() {
+    let dir = temp_dir("include-share");
+    // `Four` lives in the library and calls `Doubled`, which lives in the entry
+    // script: the two files are one program, so a procedure may be on either
+    // side of the include.
+    write_file(
+        &dir,
+        "lib.btm",
+        "Function Twice(n)\n    Twice = n * 2\nEnd Function\n\nFunction Four(n)\n    Four = Doubled(Twice(n))\nEnd Function\n",
+    );
+    write_file(
+        &dir,
+        "script.btm",
+        "Include \"lib.btm\"\n\nFunction Doubled(n)\n    Doubled = n * 2\nEnd Function\n\nDebug.Print Four(3)\n",
+    );
+    let outcome = run_script(&dir, &dir.join("script.btm"), &[], &[]);
+    assert_eq!(outcome.code, 0, "stderr: {}", outcome.stderr);
+    assert_eq!(outcome.stdout, "12\n");
+}
+
+#[test]
+fn a_file_is_included_once_even_in_a_diamond() {
+    let dir = temp_dir("include-diamond");
+    write_file(
+        &dir,
+        "lib.btm",
+        "Debug.Print \"lib init\"\nFunction Tag()\n    Tag = \"tagged\"\nEnd Function\n",
+    );
+    write_file(&dir, "left.btm", "Include \"lib.btm\"\nDebug.Print \"left\"\n");
+    write_file(&dir, "right.btm", "Include \"lib.btm\"\nDebug.Print \"right\"\n");
+    write_file(
+        &dir,
+        "script.btm",
+        "Include \"left.btm\"\nInclude \"right.btm\"\nDebug.Print Tag()\n",
+    );
+    let outcome = run_script(&dir, &dir.join("script.btm"), &[], &[]);
+    assert_eq!(outcome.code, 0, "stderr: {}", outcome.stderr);
+    assert_eq!(outcome.stdout, "lib init\nleft\nright\ntagged\n");
+}
+
+#[test]
+fn includes_resolve_next_to_the_script_not_the_shell() {
+    let dir = temp_dir("include-relative");
+    // A decoy in the working directory: the script's own directory wins.
+    write_file(
+        &dir,
+        "lib.btm",
+        "Function Where()\n    Where = \"shell\"\nEnd Function\n",
+    );
+    write_file(
+        &dir,
+        "sub/lib.btm",
+        "Function Where()\n    Where = \"script\"\nEnd Function\n",
+    );
+    write_file(
+        &dir,
+        "sub/script.btm",
+        "Include \"lib.btm\"\nDebug.Print Where()\n",
+    );
+    let outcome = run_script(&dir, &dir.join("sub/script.btm"), &[], &[]);
+    assert_eq!(outcome.code, 0, "stderr: {}", outcome.stderr);
+    assert_eq!(outcome.stdout, "script\n");
+}
+
+#[test]
+fn a_missing_include_lists_where_it_looked() {
+    let dir = temp_dir("include-missing");
+    write_file(&dir, "sub/script.btm", "Include \"lib.btm\"\n");
+    // The decoy exists relative to the shell's directory, which is not
+    // searched; the error says so rather than leaving the user guessing.
+    write_file(&dir, "lib.btm", "Function Where()\nEnd Function\n");
+    let outcome = run_script(&dir, &dir.join("sub/script.btm"), &[], &[]);
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("load error 53"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("File not found: lib.btm"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("current directory"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("1 | Include \"lib.btm\""),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn include_directories_come_from_minus_i_and_the_environment() {
+    let dir = temp_dir("include-path");
+    write_file(
+        &dir,
+        "libs/util.btm",
+        "Function Greet()\n    Greet = \"hello\"\nEnd Function\n",
+    );
+    let script = write_file(
+        &dir,
+        "work/script.btm",
+        "Include \"util.btm\"\nDebug.Print Greet()\n",
+    );
+    let libs = dir.join("libs");
+
+    // `-I <dir>`.
+    let mut command = Command::new(binary());
+    command
+        .arg("run")
+        .arg("-I")
+        .arg(&libs)
+        .arg(&script)
+        .current_dir(&dir)
+        .env_remove("BARTELANG_PATH");
+    let output = command.output().expect("spawn bartelang");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hello\n");
+
+    // `-I<dir>`, attached.
+    let mut command = Command::new(binary());
+    command
+        .arg("run")
+        .arg(format!("-I{}", libs.display()))
+        .arg(&script)
+        .current_dir(&dir)
+        .env_remove("BARTELANG_PATH");
+    let output = command.output().expect("spawn bartelang");
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hello\n");
+
+    // With neither, the include is not found...
+    let outcome = run_script(&dir, &script, &[], &[]);
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("File not found: util.btm"),
+        "stderr: {}",
+        outcome.stderr
+    );
+
+    // ...and `$BARTELANG_PATH` finds it.
+    let mut command = Command::new(binary());
+    command
+        .arg("run")
+        .arg(&script)
+        .current_dir(&dir)
+        .env(
+            "BARTELANG_PATH",
+            format!("{}:{}", dir.join("nope").display(), libs.display()),
+        );
+    let output = command.output().expect("spawn bartelang");
+    assert_eq!(output.status.code(), Some(0), "stdout: {}", String::from_utf8_lossy(&output.stdout));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hello\n");
+}
+
+#[test]
+fn errors_inside_an_included_file_name_that_file() {
+    let dir = temp_dir("include-error");
+    write_file(
+        &dir,
+        "lib.btm",
+        "Function Boom()\n    Boom = 1 / 0\nEnd Function\n",
+    );
+    write_file(&dir, "script.btm", "Include \"lib.btm\"\n\nDebug.Print Boom()\n");
+    let outcome = run_script(&dir, &dir.join("script.btm"), &[], &[]);
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("runtime error 11 in lib.btm at line 2"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("2 |     Boom = 1 / 0"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn err_file_names_the_failing_file() {
+    let dir = temp_dir("include-err-file");
+    write_file(
+        &dir,
+        "lib.btm",
+        "Sub Boom()\n    Dim y\n    Let y = 1 / 0\nEnd Sub\n",
+    );
+    write_file(
+        &dir,
+        "script.btm",
+        "Include \"lib.btm\"\n\nTry\n    Boom\nCatch Err\n    Debug.Print Err.File & \" line \" & Err.Line & \" error \" & Err.Number\nEnd Try\n",
+    );
+    let outcome = run_script(&dir, &dir.join("script.btm"), &[], &[]);
+    assert_eq!(outcome.code, 0, "stderr: {}", outcome.stderr);
+    assert_eq!(outcome.stdout, "lib.btm line 3 error 11\n");
+}
+
+#[test]
+fn duplicate_declarations_across_files_are_a_load_error() {
+    let dir = temp_dir("include-duplicate");
+    write_file(
+        &dir,
+        "lib.btm",
+        "Sub Report()\n    Debug.Print \"lib\"\nEnd Sub\n",
+    );
+    write_file(
+        &dir,
+        "script.btm",
+        "Include \"lib.btm\"\n\nSub Report()\n    Debug.Print \"script\"\nEnd Sub\n",
+    );
+    let outcome = run_script(&dir, &dir.join("script.btm"), &[], &[]);
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("load error 1005"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr
+            .contains("Procedure 'report' is defined more than once"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome.stderr.contains("first at lib.btm line 1"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn duplicate_declarations_within_one_file_are_a_load_error() {
+    let dir = temp_dir("duplicate-one-file");
+    let outcome = run(
+        &dir,
+        "Sub A()\n    Debug.Print \"first\"\nEnd Sub\nSub A()\n    Debug.Print \"second\"\nEnd Sub\nA\n",
+        &[],
+    );
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("load error 1005"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    // The second definition used to win silently.
+    assert_eq!(outcome.stdout, "");
+}
+
+#[test]
+fn include_cycles_print_the_chain() {
+    let dir = temp_dir("include-cycle");
+    write_file(&dir, "a.btm", "Include \"b.btm\"\nDebug.Print \"a\"\n");
+    write_file(&dir, "b.btm", "Include \"a.btm\"\nDebug.Print \"b\"\n");
+    let outcome = run_script(&dir, &dir.join("a.btm"), &[], &[]);
+    assert_eq!(outcome.code, 1);
+    assert!(
+        outcome.stderr.contains("load error 1004"),
+        "stderr: {}",
+        outcome.stderr
+    );
+    assert!(
+        outcome
+            .stderr
+            .contains("Circular include: a.btm -> b.btm -> a.btm"),
+        "stderr: {}",
+        outcome.stderr
+    );
+}
+
+#[test]
+fn include_rules_are_enforced_at_load_time() {
+    let dir = temp_dir("include-rules");
+    let nested = run(&dir, "If 1 Then\n    Include \"lib.btm\"\nEnd If\n", &[]);
+    assert_eq!(nested.code, 1);
+    assert!(
+        nested.stderr.contains("top level"),
+        "stderr: {}",
+        nested.stderr
+    );
+
+    let dir = temp_dir("include-rules-literal");
+    let dynamic = run(&dir, "Dim name\nLet name = \"lib.btm\"\nInclude name\n", &[]);
+    assert_eq!(dynamic.code, 1);
+    assert!(
+        dynamic.stderr.contains("string literal"),
+        "stderr: {}",
+        dynamic.stderr
+    );
+}
+
+#[test]
+fn a_leading_shebang_line_is_skipped() {
+    let dir = temp_dir("shebang");
+    let outcome = run(
+        &dir,
+        "#!/usr/bin/env bartelang\nDebug.Print \"ran\"\n",
+        &[],
+    );
+    assert_eq!(outcome.code, 0, "stderr: {}", outcome.stderr);
+    assert_eq!(outcome.stdout, "ran\n");
+}
+
+#[test]
+fn parse_expands_includes_and_shows_units() {
+    let dir = temp_dir("include-parse");
+    write_file(
+        &dir,
+        "lib.btm",
+        "Function Add(a, b)\n    Add = a + b\nEnd Function\n",
+    );
+    let script = write_file(
+        &dir,
+        "script.btm",
+        "Include \"lib.btm\"\nDebug.Print Add(1, 2)\n",
+    );
+    let output = Command::new(binary())
+        .arg("parse")
+        .arg(&script)
+        .output()
+        .expect("spawn bartelang");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("FuncDeclaration"), "stdout: {stdout}");
+    // Statements from the included file keep its unit id, which is what makes
+    // the file name available on an error.
+    assert!(stdout.contains("unit: 1"), "stdout: {stdout}");
+}
+
+#[test]
+fn the_shipped_include_example_runs() {
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let dir = temp_dir("count-words");
+    let output = Command::new(binary())
+        .arg("run")
+        .arg(examples.join("count_words.btm"))
+        .current_dir(&dir)
+        .output()
+        .expect("spawn bartelang");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "stderr: {stderr}");
+    assert!(stdout.contains("sentence words: 9"), "stdout: {stdout}");
 }

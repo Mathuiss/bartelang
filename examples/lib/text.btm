@@ -1,0 +1,24 @@
+' lib/text.btm - text helpers shared by the example scripts.
+'
+' This file is meant to be included, not run:
+'     Include "lib/text.btm"
+' Its declarations join the including program, and however many files ask for
+' it, it is read once.
+
+Function WordCount(text)
+    Dim words
+    Let words = Split(Trim(text), " ")
+    Dim count
+    Let count = 0
+    Dim word
+    For Each word In words
+        If Len(word) > 0 Then
+            Let count = count + 1
+        End If
+    Next word
+    WordCount = count
+End Function
+
+Sub Banner(title)
+    Debug.Print "== $title =="
+End Sub

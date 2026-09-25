@@ -8,6 +8,7 @@
 //!   * `\n` and `\r\n` terminate statements; `:` separates statements on a line
 //!   * a space followed by `_` then a newline is line continuation, no token
 //!   * `'` starts a comment that runs to end of line
+//!   * a leading `#!` line is a shebang and is skipped
 //!   * `"..."` is a string; `""` inside a string is a literal quote
 //!   * `` `...` `` is a command substitution, captured verbatim
 //!   * `#1` is a vintage file channel handle
@@ -140,6 +141,15 @@ pub fn tokenize(src: &str) -> Result<Lexed, SyntaxError> {
     let mut line = 1usize;
     // Index at which the current line starts, so columns are line-relative.
     let mut line_start = 0usize;
+
+    // A leading `#!` line is a shebang, not source: `#!/usr/bin/env bartelang`
+    // lets a script be executed directly.  Only line 1, and the newline is left
+    // in place so line numbers keep matching the file.
+    if chars.starts_with(&['#', '!']) {
+        while i < n && chars[i] != '\n' {
+            i += 1;
+        }
+    }
 
     while i < n {
         let c = chars[i];

@@ -64,6 +64,12 @@ pub struct Parser {
     with_stack: Vec<String>,
     /// Counter for the synthetic names that hold captured `With` objects.
     with_counter: usize,
+    /// Which source unit (file) this parser is reading.  Statements are tagged
+    /// with it so the loader's source map can name the file on an error.
+    unit: usize,
+    /// How many block bodies enclose the current statement.  `Include` is only
+    /// legal at zero, i.e. at the top level of a file.
+    block_depth: usize,
 }
 
 impl Parser {
@@ -77,7 +83,15 @@ impl Parser {
             declared_arrays: HashSet::new(),
             with_stack: Vec::new(),
             with_counter: 0,
+            unit: 0,
+            block_depth: 0,
         }
+    }
+
+    /// The same parser, reading the source unit `unit` of a multi-file program.
+    pub fn with_unit(mut self, unit: usize) -> Self {
+        self.unit = unit;
+        self
     }
 
     /// Convenience: tokenise and parse in one step.
@@ -156,12 +170,12 @@ impl Parser {
 
     fn error_here(&self, message: impl Into<String>) -> SyntaxError {
         let (line, col) = self.here();
-        SyntaxError::new(message, line, col)
+        SyntaxError::new(message, line, col).in_unit(self.unit)
     }
 
     /// A diagnostic pointing at an earlier token than the current position.
     fn error_at(&self, index: usize, message: impl Into<String>) -> SyntaxError {
-        SyntaxError::new(message, self.line_of(index), self.col_of(index))
+        SyntaxError::new(message, self.line_of(index), self.col_of(index)).in_unit(self.unit)
     }
 
     fn expect(&mut self, token: &Token, what: &str) -> Result<(), SyntaxError> {
@@ -233,6 +247,15 @@ impl Parser {
     /// Parses statements until one of `terminators` starts a line, leaving the
     /// terminator in place for the caller.
     fn parse_block_until(&mut self, terminators: &[&str]) -> Result<Vec<Stmt>, SyntaxError> {
+        // Everything inside a block is one level down, which is what makes
+        // `Include` a top-level-only statement.
+        self.block_depth += 1;
+        let result = self.parse_block_body(terminators);
+        self.block_depth -= 1;
+        result
+    }
+
+    fn parse_block_body(&mut self, terminators: &[&str]) -> Result<Vec<Stmt>, SyntaxError> {
         let mut statements = Vec::new();
         loop {
             self.skip_separators();
@@ -257,12 +280,14 @@ impl Parser {
         Ok(statements)
     }
 
-    /// Parses one statement, tagging it with the line it started on.  The
-    /// interpreter turns that tag into the line number on a runtime error.
+    /// Parses one statement, tagging it with the source unit and the line it
+    /// started on.  The interpreter turns that tag into the file and line on a
+    /// runtime error.
     fn parse_located_statement(&mut self) -> Result<Stmt, SyntaxError> {
         let line = self.line_of(self.pos);
         let inner = self.parse_statement()?;
         Ok(Stmt::Located {
+            unit: self.unit,
             line,
             inner: Box::new(inner),
         })
@@ -333,6 +358,13 @@ impl Parser {
                 "const" => {
                     self.advance();
                     self.parse_const()
+                }
+                "include" => {
+                    // A real statement, not a comment metacommand: the loader
+                    // reads the file once per canonical path, before anything
+                    // runs.  Like `open` and `print`, the keyword wins outright.
+                    self.advance();
+                    self.parse_include()
                 }
                 "type" => {
                     self.advance();
@@ -408,6 +440,29 @@ impl Parser {
                 let value = self.parse_expr()?;
                 Ok(Stmt::ExprStatement(value))
             }
+        }
+    }
+
+    /// `Include "path.btm"` - declarations from another file join this program.
+    ///
+    /// The path must be a literal (the loader resolves it before anything runs)
+    /// and the statement must sit at the top level of a file, so that hoisting
+    /// sees every declaration it brings in.
+    fn parse_include(&mut self) -> Result<Stmt, SyntaxError> {
+        if self.block_depth > 0 {
+            return Err(self.error_here(
+                "Include must be at the top level of a file, not inside a block",
+            ));
+        }
+        match self.peek().clone() {
+            Token::Str(path) => {
+                self.advance();
+                Ok(Stmt::Include { path })
+            }
+            other => Err(self.error_here(format!(
+                "expected a string literal path after Include, found {}",
+                other.describe()
+            ))),
         }
     }
 

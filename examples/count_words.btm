@@ -1,0 +1,18 @@
+#!/usr/bin/env bartelang
+' count_words.btm - a two-file example.
+'
+' Run with: bartelang run examples/count_words.btm
+' The include resolves relative to this file, so the command works from any
+' directory.
+
+Include "lib/text.btm"
+
+Banner "word count"
+
+Dim sentence
+Let sentence = "the quick brown fox jumps over the lazy dog"
+Debug.Print "sentence words: " & WordCount(sentence)
+
+Dim host
+Let host = `uname -n`
+Debug.Print "host words: " & WordCount(host)
